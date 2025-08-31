@@ -1,40 +1,43 @@
-// mit_superset_production.c
+// mit_superset_final.c
+// Compile: gcc mit_superset_final.c -lm -o mit_superset_final
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <math.h>
+#include <pthread.h>
 #include <unistd.h>
-#include <sys/wait.h>
 
 #define MAX_TOKENS 65536
-#define MAX_AST_NODES 65536
-#define MAX_LINE 1024
-#define MAX_VECTOR_SIZE 64
 #define MAX_VARS 1024
+#define MAX_VECTOR 64
+#define MAX_TASKS 64
 
-typedef enum {TOKEN_IDENTIFIER,TOKEN_NUMBER,TOKEN_STRING,TOKEN_OPERATOR,TOKEN_KEYWORD,TOKEN_PUNCTUATION,TOKEN_VECTOR,TOKEN_ASYNCFOR,TOKEN_TASK,TOKEN_TRIPLESTRING,TOKEN_BUILTIN,TOKEN_EOF} TokenType;
-typedef struct {TokenType type; char text[256];} Token;
+typedef enum {TOKEN_NUMBER,TOKEN_IDENTIFIER,TOKEN_OPERATOR,TOKEN_KEYWORD,TOKEN_PUNCTUATION,TOKEN_EOF,TOKEN_BUILTIN} TokenType;
+typedef struct {TokenType type; char text[64];} Token;
 Token tokens[MAX_TOKENS]; int token_count=0,current_token=0;
 
-typedef enum {AST_PRINT,AST_NUMBER,AST_STRING,AST_VECTOR,AST_BINARY,AST_IDENTIFIER,AST_ASYNCFOR,AST_TASK,AST_PROGRAM,AST_BUILTIN_NODE,AST_FUNCTION,AST_RETURN,AST_IF,AST_WHILE,AST_FOR,AST_UNKNOWN} ASTType;
-typedef struct ASTNode{
-    ASTType type; char value[256];
-    struct ASTNode* left; struct ASTNode* right;
-    struct ASTNode* body[MAX_AST_NODES]; int body_count;
-} ASTNode;
-ASTNode ast_nodes[MAX_AST_NODES]; int ast_count=0;
+typedef struct {char name[64]; double value;} Variable;
+Variable vars[MAX_VARS]; int var_count=0;
+
+typedef struct {double values[MAX_VECTOR]; int length;} Vector;
+Vector vectors[MAX_VARS]; // vector storage
+
+typedef struct {char cmd[128]; void* arg;} Task;
+Task tasks[MAX_TASKS]; int task_count=0;
 
 Token* next_token(){return &tokens[current_token++];}
 Token* peek_token(){return &tokens[current_token];}
-void add_token(TokenType type,const char* text){if(token_count<MAX_TOKENS){tokens[token_count].type=type; strncpy(tokens[token_count].text,text,255); token_count++;}}
-int is_keyword(const char* s){const char* k[]={"let","const","function","return","if","else","for","while","async","task","print",NULL}; for(int i=0;k[i];i++) if(strcmp(s,k[i])==0) return 1; return 0;}
+void add_token(TokenType type,const char* text){if(token_count<MAX_TOKENS){tokens[token_count].type=type; strncpy(tokens[token_count].text,text,63); token_count++;}}
 
-void tokenize_line(char* line){
-    char* p=line;
+int is_keyword(const char* s){return strcmp(s,"let")==0||strcmp(s,"print")==0||strcmp(s,"task")==0||strcmp(s,"async")==0;}
+
+void tokenize(const char* line){
+    const char* p=line;
     while(*p){
         if(isspace(*p)){p++; continue;}
         if(isalpha(*p)||*p=='_'){
-            char buf[256]; int n=0;
+            char buf[64]; int n=0;
             while(isalnum(*p)||*p=='_') buf[n++]=*p++;
             buf[n]='\0';
             if(is_keyword(buf)) add_token(TOKEN_KEYWORD,buf);
@@ -42,97 +45,154 @@ void tokenize_line(char* line){
                 add_token(TOKEN_BUILTIN,buf);
             else add_token(TOKEN_IDENTIFIER,buf);
         }
-        else if(isdigit(*p)){
-            char buf[256]; int n=0;
-            while(isdigit(*p)) buf[n++]=*p++;
-            buf[n]='\0';
-            add_token(TOKEN_NUMBER,buf);
+        else if(isdigit(*p)||(*p=='.' && isdigit(*(p+1)))){
+            char buf[64]; int n=0;
+            while(isdigit(*p)||*p=='.') buf[n++]=*p++;
+            buf[n]='\0'; add_token(TOKEN_NUMBER,buf);
         }
-        else if(*p=='\"'){
-            p++;
-            char buf[256]; int n=0;
-            while(*p && *p!='\"') buf[n++]=*p++;
-            if(*p=='\"') p++;
-            buf[n]='\0';
-            add_token(TOKEN_STRING,buf);
-        }
-        else if(*p=='+'||*p=='-'||*p=='*'||*p=='/'||*p=='='||*p=='<'||*p=='>'||*p=='!'||*p=='&'||*p=='|'){
+        else if(strchr("+-*/%=(),",*p)){
             char buf[2]; buf[0]=*p++; buf[1]='\0'; add_token(TOKEN_OPERATOR,buf);
         }
-        else{char buf[2]; buf[0]=*p++; buf[1]='\0'; add_token(TOKEN_PUNCTUATION,buf);}
+        else p++;
     }
+    add_token(TOKEN_EOF,"EOF");
 }
 
-void tokenize_file(const char* filename){
-    FILE* f=fopen(filename,"r"); if(!f){perror("File open error"); exit(1);}
-    char line[MAX_LINE];
-    while(fgets(line,MAX_LINE,f)){
-        char* t=line; while(*t==' '||*t=='\t') t++;
-        if(strncmp(t,"Vector(",7)==0) add_token(TOKEN_VECTOR,"Vector");
-        else if(strncmp(t,"async for",9)==0) add_token(TOKEN_ASYNCFOR,"async for");
-        else if(strncmp(t,"task",4)==0) add_token(TOKEN_TASK,"task");
-        else if(strncmp(t,"\"\"\"",3)==0) add_token(TOKEN_TRIPLESTRING,"triple");
-        else tokenize_line(line);
+// ---------------- Expression evaluator ----------------
+double parse_expression();
+double parse_factor(){
+    Token* t=next_token();
+    if(t->type==TOKEN_NUMBER) return atof(t->text);
+    if(t->type==TOKEN_IDENTIFIER){
+        if(strcmp(t->text,"sin")==0){next_token(); double arg=parse_expression(); return sin(arg);}
+        if(strcmp(t->text,"cos")==0){next_token(); double arg=parse_expression(); return cos(arg);}
+        if(strcmp(t->text,"tan")==0){next_token(); double arg=parse_expression(); return tan(arg);}
+        if(strcmp(t->text,"sqrt")==0){next_token(); double arg=parse_expression(); return sqrt(arg);}
+        if(strcmp(t->text,"pow")==0){next_token(); double a=parse_expression(); double b=parse_expression(); return pow(a,b);}
+        for(int i=0;i<var_count;i++) if(strcmp(vars[i].name,t->text)==0) return vars[i].value;
+        return 0;
     }
-    add_token(TOKEN_EOF,"EOF"); fclose(f);
+    if(t->type==TOKEN_OPERATOR && strcmp(t->text,"(")==0){
+        double val=parse_expression();
+        next_token(); return val;
+    }
+    return 0;
+}
+double parse_term(){
+    double val=parse_factor();
+    while(peek_token()->type==TOKEN_OPERATOR && (strcmp(peek_token()->text,"*")==0 || strcmp(peek_token()->text,"/")==0 || strcmp(peek_token()->text,"%")==0)){
+        Token* op=next_token();
+        double right=parse_factor();
+        if(strcmp(op->text,"*")==0) val*=right;
+        else if(strcmp(op->text,"/")==0) val/=right;
+        else if(strcmp(op->text,"%")==0) val=(int)val%(int)right;
+    }
+    return val;
+}
+double parse_expression(){
+    double val=parse_term();
+    while(peek_token()->type==TOKEN_OPERATOR && (strcmp(peek_token()->text,"+")==0 || strcmp(peek_token()->text,"-")==0)){
+        Token* op=next_token();
+        double right=parse_term();
+        if(strcmp(op->text,"+")==0) val+=right;
+        else val-=right;
+    }
+    return val;
 }
 
-ASTNode* create_node(ASTType type,const char* val){ASTNode* n=&ast_nodes[ast_count++]; n->type=type; strncpy(n->value,val,255); n->left=n->right=NULL; n->body_count=0; return n;}
-ASTNode* parse_statement(); ASTNode* parse_program();
-ASTNode* parse_print(){ASTNode* n=create_node(AST_PRINT,"print"); Token* t=next_token(); if(t->type==TOKEN_NUMBER||t->type==TOKEN_STRING||t->type==TOKEN_IDENTIFIER) n->left=create_node(AST_STRING,t->text); return n;}
-ASTNode* parse_vector(){return create_node(AST_VECTOR,"Vector");}
-ASTNode* parse_asyncfor(){return create_node(AST_ASYNCFOR,"async for");}
-ASTNode* parse_task(){return create_node(AST_TASK,"task");}
-ASTNode* parse_builtin(){ASTNode* n=create_node(AST_BUILTIN_NODE,"builtin"); Token* t=next_token(); if(t) strncpy(n->value,t->text,255); return n;}
-ASTNode* parse_statement(){
+// ---------------- Task system ----------------
+void* run_task(void* arg){Task* t=(Task*)arg; printf("[Task] Running: %s\n",t->cmd); return NULL;}
+void add_task(const char* cmd){strcpy(tasks[task_count].cmd,cmd); pthread_t th; pthread_create(&th,NULL,run_task,&tasks[task_count]); task_count++;}
+
+// ---------------- Statements ----------------
+void execute_line(){
     Token* t=peek_token();
-    if(strcmp(t->text,"print")==0) return parse_print();
-    if(strcmp(t->text,"Vector")==0) return parse_vector();
-    if(strcmp(t->text,"async for")==0) return parse_asyncfor();
-    if(strcmp(t->text,"task")==0) return parse_task();
-    if(t->type==TOKEN_BUILTIN) return parse_builtin();
-    next_token(); return create_node(AST_UNKNOWN,"unknown");
-}
-ASTNode* parse_program(){ASTNode* r=create_node(AST_PROGRAM,"program"); while(peek_token()->type!=TOKEN_EOF){ASTNode* s=parse_statement(); r->body[r->body_count++]=s;} return r;}
-
-typedef struct{int values[MAX_VECTOR_SIZE]; int length;} VectorVal;
-typedef struct{char name[64]; int value;} Variable;
-Variable vars[MAX_VARS]; int var_count=0;
-VectorVal vector_create(int* arr,int len){VectorVal v; v.length=len; for(int i=0;i<len;i++) v.values[i]=arr[i]; return v;}
-
-void builtin_exec(const char* cmd){int status=system(cmd); if(status==-1) printf("Command failed\n");}
-void builtin_write(const char* filename,const char* content){FILE* f=fopen(filename,"w"); if(!f){printf("Write failed\n"); return;} fprintf(f,"%s",content); fclose(f);}
-void builtin_read(const char* filename){FILE* f=fopen(filename,"r"); if(!f){printf("Read failed\n"); return;} char buf[1024]; while(fgets(buf,1024,f)) printf("%s",buf); fclose(f);}
-void builtin_delete(const char* filename){if(remove(filename)==0) printf("Deleted %s\n",filename); else printf("Delete failed\n");}
-void builtin_send(const char* instr){printf("Quantum send: %s\n",instr);}
-void builtin_simulate(const char* instr){printf("Quantum simulate: %s\n",instr);}
-
-void execute_node(ASTNode* n){
-    if(!n) return;
-    switch(n->type){
-        case AST_PRINT: if(n->left) printf("%s\n",n->left->value); break;
-        case AST_VECTOR: printf("<Vector>\n"); break;
-        case AST_ASYNCFOR: printf("<AsyncFor>\n"); break;
-        case AST_TASK: printf("<Task>\n"); break;
-        case AST_BUILTIN_NODE:
-            if(strcmp(n->value,"exec")==0){char c[256]; printf("Command: "); fgets(c,256,stdin); c[strcspn(c,"\n")]=0; builtin_exec(c);}
-            else if(strcmp(n->value,"read")==0){char f[256]; printf("Read file: "); fgets(f,256,stdin); f[strcspn(f,"\n")]=0; builtin_read(f);}
-            else if(strcmp(n->value,"write")==0){char f[256],ct[256]; printf("Write file: "); fgets(f,256,stdin); f[strcspn(f,"\n")]=0; printf("Content: "); fgets(ct,256,stdin); ct[strcspn(ct,"\n")]=0; builtin_write(f,ct);}
-            else if(strcmp(n->value,"delete")==0){char f[256]; printf("Delete file: "); fgets(f,256,stdin); f[strcspn(f,"\n")]=0; builtin_delete(f);}
-            else if(strcmp(n->value,"send")==0){char c[256]; printf("Send instr: "); fgets(c,256,stdin); c[strcspn(c,"\n")]=0; builtin_send(c);}
-            else if(strcmp(n->value,"simulate")==0){char c[256]; printf("Simulate instr: "); fgets(c,256,stdin); c[strcspn(c,"\n")]=0; builtin_simulate(c);}
-            break;
-        default: break;
+    if(t->type==TOKEN_KEYWORD && strcmp(t->text,"let")==0){
+        next_token(); Token* var_name=next_token(); next_token(); double val=parse_expression();
+        int found=0; for(int i=0;i<var_count;i++) if(strcmp(vars[i].name,var_name->text)==0){vars[i].value=val; found=1;}
+        if(!found){strcpy(vars[var_count].name,var_name->text); vars[var_count].value=val; var_count++;}
     }
-    for(int i=0;i<n->body_count;i++) execute_node(n->body[i]);
+    else if(t->type==TOKEN_KEYWORD && strcmp(t->text,"print")==0){next_token(); double val=parse_expression(); printf("%g\n",val);}
+    else if(t->type==TOKEN_KEYWORD && strcmp(t->text,"task")==0){next_token(); Token* cmd=next_token(); add_task(cmd->text);}
+    else if(t->type==TOKEN_BUILTIN){
+        Token* b=next_token(); char filename[128]; char content[256];
+        if(strcmp(b->text,"read")==0){printf("File: "); fgets(filename,128,stdin); filename[strcspn(filename,"\n")]=0; FILE* f=fopen(filename,"r"); if(f){while(fgets(content,256,f)) printf("%s",content); fclose(f);}}
+        else if(strcmp(b->text,"write")==0){printf("File: "); fgets(filename,128,stdin); filename[strcspn(filename,"\n")]=0; printf("Content: "); fgets(content,256,stdin); content[strcspn(content,"\n")]=0; FILE* f=fopen(filename,"w"); if(f){fprintf(f,"%s",content); fclose(f);}}
+        else if(strcmp(b->text,"delete")==0){printf("Delete file: "); fgets(filename,128,stdin); filename[strcspn(filename,"\n")]=0; remove(filename);}
+        else if(strcmp(b->text,"exec")==0){printf("Command: "); fgets(content,256,stdin); content[strcspn(content,"\n")]=0; system(content);}
+        else if(strcmp(b->text,"send")==0){printf("Quantum send: "); fgets(content,256,stdin); content[strcspn(content,"\n")]=0; printf("Sent: %s\n",content);}
+        else if(strcmp(b->text,"simulate")==0){printf("Quantum simulate: "); fgets(content,256,stdin); content[strcspn(content,"\n")]=0; printf("Simulated: %s\n",content);}
+    }
 }
 
-void execute_program(ASTNode* root){for(int i=0;i<root->body_count;i++) execute_node(root->body[i]);}
-
+// ---------------- Main ----------------
 int main(int argc,char* argv[]){
     if(argc<2){printf("Usage: %s <file.mits>\n",argv[0]); return 1;}
-    tokenize_file(argv[1]);
-    ASTNode* root=parse_program();
-    execute_program(root);
+    FILE* f=fopen(argv[1],"r"); if(!f){printf("File not found\n"); return 1;}
+    char line[256];
+    while(fgets(line,256,f)){
+        token_count=0; current_token=0;
+        tokenize(line);
+        while(peek_token()->type!=TOKEN_EOF) execute_line();
+    }
+    fclose(f);
+    sleep(1); // wait async tasks
     return 0;
+}
+// Vector support snippet for MitScripts
+typedef struct {double values[MAX_VECTOR]; int length;} Vector;
+Vector vectors[MAX_VARS]; // store vector variables
+
+int vector_var_index(const char* name){
+    for(int i=0;i<var_count;i++) if(strcmp(vars[i].name,name)==0) return i;
+    return -1;
+}
+
+// Parse vector literal: [1,2,3]
+Vector parse_vector_literal(){
+    Vector v={.length=0};
+    next_token(); // skip '['
+    while(peek_token()->type!=TOKEN_OPERATOR || strcmp(peek_token()->text,"]")!=0){
+        if(peek_token()->type==TOKEN_NUMBER){
+            v.values[v.length++] = atof(next_token()->text);
+            if(peek_token()->type==TOKEN_OPERATOR && strcmp(peek_token()->text,",")==0) next_token();
+        }
+    }
+    next_token(); // skip ']'
+    return v;
+}
+
+// Vector addition: v1 + v2
+Vector vector_add(Vector a, Vector b){
+    Vector res={.length=a.length};
+    for(int i=0;i<a.length;i++) res.values[i]=a.values[i]+b.values[i];
+    return res;
+}
+
+// Vector subtraction: v1 - v2
+Vector vector_sub(Vector a, Vector b){
+    Vector res={.length=a.length};
+    for(int i=0;i<a.length;i++) res.values[i]=a.values[i]-b.values[i];
+    return res;
+}
+
+// Scalar multiplication: v * 2
+Vector vector_scalar_mul(Vector a, double scalar){
+    Vector res={.length=a.length};
+    for(int i=0;i<a.length;i++) res.values[i]=a.values[i]*scalar;
+    return res;
+}
+
+// Scalar division: v / 2
+Vector vector_scalar_div(Vector a, double scalar){
+    Vector res={.length=a.length};
+    for(int i=0;i<a.length;i++) res.values[i]=a.values[i]/scalar;
+    return res;
+}
+
+// Print vector
+void print_vector(Vector v){
+    printf("[");
+    for(int i=0;i<v.length;i++){printf("%g",v.values[i]); if(i<v.length-1) printf(",");}
+    printf("]\n");
 }
