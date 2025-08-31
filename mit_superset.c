@@ -1,7 +1,4 @@
 // mit_superset_production.c
-// Compile: gcc mit_superset_production.c -o mit_superset
-// Run: ./mit_superset script.mits
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,20 +11,17 @@
 #define MAX_LINE 1024
 #define MAX_VECTOR_SIZE 64
 #define MAX_VARS 1024
-#define MAX_TASKS 256
 
 typedef enum {TOKEN_IDENTIFIER,TOKEN_NUMBER,TOKEN_STRING,TOKEN_OPERATOR,TOKEN_KEYWORD,TOKEN_PUNCTUATION,TOKEN_VECTOR,TOKEN_ASYNCFOR,TOKEN_TASK,TOKEN_TRIPLESTRING,TOKEN_BUILTIN,TOKEN_EOF} TokenType;
 typedef struct {TokenType type; char text[256];} Token;
 Token tokens[MAX_TOKENS]; int token_count=0,current_token=0;
 
 typedef enum {AST_PRINT,AST_NUMBER,AST_STRING,AST_VECTOR,AST_BINARY,AST_IDENTIFIER,AST_ASYNCFOR,AST_TASK,AST_PROGRAM,AST_BUILTIN_NODE,AST_FUNCTION,AST_RETURN,AST_IF,AST_WHILE,AST_FOR,AST_UNKNOWN} ASTType;
-
 typedef struct ASTNode{
     ASTType type; char value[256];
     struct ASTNode* left; struct ASTNode* right;
     struct ASTNode* body[MAX_AST_NODES]; int body_count;
 } ASTNode;
-
 ASTNode ast_nodes[MAX_AST_NODES]; int ast_count=0;
 
 Token* next_token(){return &tokens[current_token++];}
@@ -83,15 +77,12 @@ void tokenize_file(const char* filename){
     add_token(TOKEN_EOF,"EOF"); fclose(f);
 }
 
-// -------------------- AST --------------------
 ASTNode* create_node(ASTType type,const char* val){ASTNode* n=&ast_nodes[ast_count++]; n->type=type; strncpy(n->value,val,255); n->left=n->right=NULL; n->body_count=0; return n;}
-
-// -------------------- Parser --------------------
 ASTNode* parse_statement(); ASTNode* parse_program();
 ASTNode* parse_print(){ASTNode* n=create_node(AST_PRINT,"print"); Token* t=next_token(); if(t->type==TOKEN_NUMBER||t->type==TOKEN_STRING||t->type==TOKEN_IDENTIFIER) n->left=create_node(AST_STRING,t->text); return n;}
-ASTNode* parse_vector(){ASTNode* n=create_node(AST_VECTOR,"Vector"); return n;}
-ASTNode* parse_asyncfor(){ASTNode* n=create_node(AST_ASYNCFOR,"async for"); return n;}
-ASTNode* parse_task(){ASTNode* n=create_node(AST_TASK,"task"); return n;}
+ASTNode* parse_vector(){return create_node(AST_VECTOR,"Vector");}
+ASTNode* parse_asyncfor(){return create_node(AST_ASYNCFOR,"async for");}
+ASTNode* parse_task(){return create_node(AST_TASK,"task");}
 ASTNode* parse_builtin(){ASTNode* n=create_node(AST_BUILTIN_NODE,"builtin"); Token* t=next_token(); if(t) strncpy(n->value,t->text,255); return n;}
 ASTNode* parse_statement(){
     Token* t=peek_token();
@@ -104,13 +95,11 @@ ASTNode* parse_statement(){
 }
 ASTNode* parse_program(){ASTNode* r=create_node(AST_PROGRAM,"program"); while(peek_token()->type!=TOKEN_EOF){ASTNode* s=parse_statement(); r->body[r->body_count++]=s;} return r;}
 
-// -------------------- Runtime --------------------
 typedef struct{int values[MAX_VECTOR_SIZE]; int length;} VectorVal;
 typedef struct{char name[64]; int value;} Variable;
 Variable vars[MAX_VARS]; int var_count=0;
 VectorVal vector_create(int* arr,int len){VectorVal v; v.length=len; for(int i=0;i<len;i++) v.values[i]=arr[i]; return v;}
 
-// Built-in functions
 void builtin_exec(const char* cmd){int status=system(cmd); if(status==-1) printf("Command failed\n");}
 void builtin_write(const char* filename,const char* content){FILE* f=fopen(filename,"w"); if(!f){printf("Write failed\n"); return;} fprintf(f,"%s",content); fclose(f);}
 void builtin_read(const char* filename){FILE* f=fopen(filename,"r"); if(!f){printf("Read failed\n"); return;} char buf[1024]; while(fgets(buf,1024,f)) printf("%s",buf); fclose(f);}
@@ -118,7 +107,6 @@ void builtin_delete(const char* filename){if(remove(filename)==0) printf("Delete
 void builtin_send(const char* instr){printf("Quantum send: %s\n",instr);}
 void builtin_simulate(const char* instr){printf("Quantum simulate: %s\n",instr);}
 
-// -------------------- Executor --------------------
 void execute_node(ASTNode* n){
     if(!n) return;
     switch(n->type){
@@ -141,7 +129,6 @@ void execute_node(ASTNode* n){
 
 void execute_program(ASTNode* root){for(int i=0;i<root->body_count;i++) execute_node(root->body[i]);}
 
-// -------------------- Main --------------------
 int main(int argc,char* argv[]){
     if(argc<2){printf("Usage: %s <file.mits>\n",argv[0]); return 1;}
     tokenize_file(argv[1]);
