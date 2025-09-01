@@ -196,3 +196,77 @@ void print_vector(Vector v){
     for(int i=0;i<v.length;i++){printf("%g",v.values[i]); if(i<v.length-1) printf(",");}
     printf("]\n");
 }
+
+#define LOCALSTORAGE_FILE "mitscripts_localstorage.txt"
+#define MAX_LS 1024
+
+typedef struct { char key[64]; char value[256]; } LSItem;
+LSItem ls_data[MAX_LS]; int ls_count = 0;
+
+// Load local storage from file
+void LS_load() {
+    FILE* f = fopen(LOCALSTORAGE_FILE, "r");
+    if(f) {
+        char k[64], v[256];
+        while(fscanf(f, "%63s %255[^\n]", k, v) == 2) {
+            strcpy(ls_data[ls_count].key, k);
+            strcpy(ls_data[ls_count].value, v);
+            ls_count++;
+        }
+        fclose(f);
+    }
+}
+
+// Save local storage to file
+void LS_save() {
+    FILE* f = fopen(LOCALSTORAGE_FILE, "w");
+    if(f) {
+        for(int i = 0; i < ls_count; i++)
+            fprintf(f, "%s %s\n", ls_data[i].key, ls_data[i].value);
+        fclose(f);
+    }
+}
+
+// Set a key/value pair
+void LS_setItem(const char* k, const char* v) {
+    for(int i = 0; i < ls_count; i++) {
+        if(strcmp(ls_data[i].key, k) == 0) {
+            strcpy(ls_data[i].value, v);
+            LS_save();
+            return;
+        }
+    }
+    strcpy(ls_data[ls_count].key, k);
+    strcpy(ls_data[ls_count].value, v);
+    ls_count++;
+    LS_save();
+}
+
+// Get a value by key
+const char* LS_getItem(const char* k) {
+    for(int i = 0; i < ls_count; i++)
+        if(strcmp(ls_data[i].key, k) == 0) return ls_data[i].value;
+    return NULL;
+}
+
+// Remove a key
+void LS_removeItem(const char* k) {
+    for(int i = 0; i < ls_count; i++) {
+        if(strcmp(ls_data[i].key, k) == 0) {
+            for(int j = i; j < ls_count-1; j++)
+                ls_data[j] = ls_data[j+1];
+            ls_count--;
+            LS_save();
+            return;
+        }
+    }
+}
+
+// Clear all keys
+void LS_clear() {
+    ls_count = 0;
+    LS_save();
+}
+
+// Initialize on runtime start
+void LS_init() { LS_load(); }
