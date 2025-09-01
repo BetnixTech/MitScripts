@@ -7,6 +7,8 @@
 #include <math.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <webview.h>
+#include <wiringPi.h>
 
 #define MAX_TOKENS 65536
 #define MAX_VARS 1024
@@ -270,3 +272,64 @@ void LS_clear() {
 
 // Initialize on runtime start
 void LS_init() { LS_load(); }
+
+// ---------------- HTML Embedding ----------------
+// Create an HTML window and render content
+void htmlcontent(const char* html) {
+    // Parameters: title, HTML string, width, height, resizable
+    webview("MitScripts HTML Window", html, 800, 600, 1);
+}
+
+// Example usage
+int main() {
+    const char* html = "<html><body>"
+                       "<h1>Hello from MitScripts C!</h1>"
+                       "<img src='https://via.placeholder.com/150'><br>"
+                       "<video width='300' controls><source src='video.mp4' type='video/mp4'></video><br>"
+                       "<audio controls><source src='audio.mp3' type='audio/mpeg'></audio><br>"
+                       "<button onclick='alert(\"Button Clicked!\")'>Click Me</button>"
+                       "</body></html>";
+
+    htmlcontent(html);
+    return 0;
+}
+
+// ---------------- Hardware ----------------
+void HW_init() {
+    if (wiringPiSetup() == -1) {
+        printf("Failed to initialize WiringPi\n");
+        exit(1);
+    }
+    printf("[Hardware Initialized]\n");
+}
+
+// LED control
+void HW_led(int pin, int state) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, state ? HIGH : LOW);
+    printf("[LED] Pin %d -> %s\n", pin, state ? "ON" : "OFF");
+}
+
+// Digital write
+void HW_digitalWrite(int pin, int val) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, val);
+    printf("[Digital Write] Pin %d -> %d\n", pin, val);
+}
+
+// Digital read
+int HW_digitalRead(int pin) {
+    pinMode(pin, INPUT);
+    int val = digitalRead(pin);
+    printf("[Digital Read] Pin %d -> %d\n", pin, val);
+    return val;
+}
+
+// Servo control (using PWM)
+void HW_servo(int pin, int deg) {
+    pinMode(pin, PWM_OUTPUT);
+    int pwm_val = (int)(1024 * deg / 180.0); // simple mapping
+    pwmWrite(pin, pwm_val);
+    printf("[Servo] Pin %d -> %d degrees\n", pin, deg);
+}
+
